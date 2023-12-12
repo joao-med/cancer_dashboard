@@ -1,0 +1,614 @@
+---
+title: "Câncer na Macrorregião Sudeste de Saúde (MG)"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    theme: 
+      version: 4
+      bootswatch: cerulean
+    orientation: rows
+    social: menu
+    source_code: embed
+
+---
+<style>
+.myClass {
+height: 20% !important
+width: 80% !important;
+float: left !important;
+margin: 10px !important;
+}
+</style>
+
+```{r, include=FALSE}
+library(flexdashboard)
+library(shiny)
+options(warn=-1)
+```
+
+```{r}
+library(tidyr)
+library(magrittr)
+library(dplyr)
+library(stringr)
+library(readr)
+library(knitr)
+library(lubridate)
+library(sf) 
+library(mapview)
+library(spdep)
+library(plotly)
+library(RColorBrewer)
+library(fst)
+theme_set(theme_bw(base_size = 20))
+```
+
+```{r global, include=F}
+###############
+# DATA
+###############
+## *Selecting cities in the region*
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+# filter with the cities codes
+cods <- se_minas$MUN_COD %>% str_sub(end =6)
+# downloading map in sf (IBGE format generate by IPEA)
+munMG <- read_rds('data//munMG.rds')
+# DATASUS only uses 6 digits for mun
+munMG$code_muni <- str_sub(munMG$code_muni, end = 6)
+# filtering data of Minas gerais based on southeast region
+se_map <- munMG %>% filter(code_muni %in% cods) %>% 
+  select(code_muni, name_muni)
+## *Causes of death*
+cid <- readxl::read_excel("data//CID-10.xltx") %>% select(CAT,DESCRICAO)
+data_ob <- read_rds("data//data_ob.rds")
+## Population data
+mun_pop <- read_fst("data//mun_pop.fst")
+## Census
+census_2010 <- read_rds("data//census_2010.rds")
+#APS coverage
+aps_coverage_2010 <- read_rds("data//aps_coverage_2010.rds")
+# ANS
+coverage_ANS <- read_rds("data//covarege_ANS.rds") 
+#variables
+variables_list <- read_rds('data//variables_list.rds')
+variables_list <- c("RPM","RPM_log",variables_list)
+# data on preventive coverage
+prev_cervical <- read.csv('data//cobertura_colo//razcito_mun.csv', sep = ";") %>% 
+  mutate(MUN_COD = MUN_COD %>% as.character()) %>% 
+  left_join(se_map,., by = c('code_muni'= 'MUN_COD')) %>% select(-MUN_NOME)
+prev_breast <- read.csv('data//cobertura_mama//razmam_mun.csv', sep = ";") %>% 
+  mutate(MUN_COD = MUN_COD %>% as.character()) %>% 
+  left_join(se_map,., by = c('code_muni'= 'MUN_COD')) %>% select(-MUN_NOME) 
+# Meaning of the abbreviations
+siglas <- read_rds('data//siglas_ag.rds')
+dic_mortality <- read_rds('data//siglas_ag.rds')
+# objects to be used
+variable_data <- 
+  left_join(aps_coverage_2010,census_2010, 
+            by = c("mun" = "Codmun6") ) %>% 
+  left_join(coverage_ANS) %>% 
+  left_join(se_map,., by = c("code_muni" = "mun"))
+
+mun_pop_std <- mun_pop %>% 
+  mutate(age_group = age_group %>% str_remove("From ")) 
+# loading function
+load('functions//filter_ob_cat_age.Rdata')
+load('functions//std_rate.Rdata')
+load('functions//filter_ob.Rdata')
+load('functions//bar_plot.Rdata')
+load('functions//hist_plot.Rdata')
+load('functions//density_plot.Rdata')
+load('functions//tree_map.Rdata')
+load('functions//map_mun.Rdata')
+load('functions//map_mun_std.Rdata')
+load('functions//cor_plot_smz.Rdata')
+load("functions//SMR.Rdata")
+# mapview options
+mapview::mapviewOptions(basemaps.color.shuffle = FALSE)
+```
+
+# Sobre {data-orientation=columns data-navmenu="Info" data-navmenu-icon="fa-info-circle"}
+
+## col
+
+### Dados {data-height=80}
+
+A seguir os dados utilizados no Dashboard e suas origens:
+
+-   Mortalidade por Câncer -- Biblioteca do R `microdatasus` (Sistema de Informação sobre Mortalidade - SIM do DATASUS)
+-   População -- Biblioteca do R `brpop` (Instituto Brasileiro de Geografia e Estatística - IBGE e DATASUS)
+-   Mapas e divisão por município -- Biblioteca do R `geobr` (Instituto de Pesquisa Econômica Aplicada - IPEA)
+-   Censo de 2010 -- IBGE
+-   Cobertura da Atenção Básica -- Sistema de Informação em Saúde para a Atenção Básica - SISAB
+-   Cobertura de Seguros de Saúde -- Seguros de Saúde (Agência Nacional de Saúde Suplementar - ANS
+-   Superintendências e Gerências de Saúde -- DATASUS
+-   Cobertura do Exame Preventivo de Câncer de Colo de Útero e Mama -- (Sistema de Informação Ambulatorial - SIA do DATASUS)
+
+### Período e espaço analisado {data-height=10}
+
+-   Período: 01/01/2010 - 31/12/2019 (Dados de Mortalidade) | 01/01/2008 - 31/12/2017 (Dados de Cobertura de Exames Preventivos)
+-   Regiões: A área abrangida é a Macrorregião Sudeste de Saúde de Minas Gerais, com 94 municípios e 19.401,60 Km².
+
+OBS: Para dos dados Cobertura da Atenção Básica e de Seguros de Sáude foi selecionado o segmento 06/2010.
+
+## col
+
+### Tratamento dos dados
+
+Os dados de mortalidade foram filtrados utilizando os CIDs-10 C00 a C97 e D46, de acordo com a Rede Interagencial de Informações para a Saúde (RIPSA)
+
+Os resultados foram descritos em valores absolutos e relativos. As informações relativas foram expressas em porcentagem, RMP ou taxas, sendo que todas as taxas foram padronizadas por idade e calculadas por 100 mil habitantes. 
+
+Quando necessário, os dados relacionados à idade foram agregados em categorias de 5 anos até a faixa de 80 anos, após a qual foram agrupados na categoria "80+". No que se refere ao tratamento estatístico, as taxas brutas foram calculadas pela contagem de observações dividida pela soma da população dos municípios no período. 
+
+As taxas padronizadas foram calculadas usando a população padronizada mundial de 2001, com o auxílio do pacote `epitools`, enquanto os óbitos esperados foram calculados com o auxílio do pacote `SpatialEpi.` A RMP foi calculada pela razão entre os óbitos observados e os esperados. Quanto às taxas de cobertura do preventivo, elas foram estimadas conforme descrito em artigo anteriormente publicado.
+
+### Autores
+
+* João Pedro Medeiros Gomes
+* Mário Círio Nogueira
+
+Publicação relacionada: <https://doi.org/10.32635/2176-9745.RBC.2023v69n4.4285>
+
+# Dicionário {data-navmenu="Info"}
+
+### Dicionário {.no-title}
+
+```{r}
+DT::datatable(bind_rows(siglas,dic_mortality))
+```
+
+# Mortalidade Geral {data-navmenu="Mortalidade" data-navmenu-icon="fa-bookmark"}
+
+## Variáveis {.sidebar}
+
+### Variáveis {.no-title}
+
+```{r}
+selectInput("sexo1", "Sexo", choices = c("Masculino","Feminino","FM"))
+```
+
+```{r}
+sliderInput("age_start1", "Idade min",value = 0, min = 0, max = 120, dragRange = F)
+```
+
+```{r}
+sliderInput("age_end1", "Idade max",value = 120, min = 0, max = 120, dragRange = F)
+```
+
+```{r}
+sliderInput("year_start1", "Ano min",value = 2010, min = 2010, max = 2019, dragRange = F,step = 1)
+```
+
+```{r}
+sliderInput("year_end1", "Ano max",value = 2019, min = 2010, max = 2019, dragRange = F)
+```
+
+```{r}
+sexo1 = reactive(input$sexo1)
+age_start1 = reactive(input$age_start1)
+age_end1 = reactive(input$age_end1)
+year_start1 = reactive(input$year_start1) 
+year_end1 = reactive(input$year_end1)
+```
+
+## Value Boxes
+
+### Número total de mortes
+
+```{r}
+filter_dataInput1  <- 
+  reactive({
+    filter_ob(sex =sexo1(),age_start = age_start1(),age_end =age_end1() ,
+              year_start = year_start1() ,year_end = year_end1() )
+  }) 
+# usar essa função para usar componentes do flexdash
+renderValueBox({
+  filter_data <- filter_dataInput1()
+  
+  valueBox(filter_data$CAUSABAS %>% length(), caption = "Mortes totais", icon = "fa-solid fa-skull")
+})
+```
+
+## col {.tabset}
+
+### Tree map
+
+```{r}
+renderPlot(
+  {
+    tree_map(filter_dataInput1())+
+      scale_fill_manual(values = colorRampPalette(brewer.pal(8, "Blues"))(11))
+  }
+)
+```
+
+### Tabela
+
+```{r}
+DT::renderDataTable({
+  data <- filter_dataInput1() %>% 
+    group_by(DESCRICAO) %>% summarise(n = n()) %>% 
+    arrange(desc(n))
+  DT::datatable(data, fillContainer = TRUE)
+})
+```
+
+# Mortalidade por Sexo {data-navmenu="Mortalidade"}
+
+## Variáveis {.sidebar}
+
+### Variáveis {.no-title}
+
+```{r}
+selectInput("sexo1a", "Sexo", choices = c("Masculino","Feminino","FM"))
+```
+
+```{r}
+sliderInput("age_start1a", "Idade min",value = 0, min = 0, max = 120, dragRange = F)
+```
+
+```{r}
+sliderInput("age_end1a", "Idade max",value = 120, min = 0, max = 120, dragRange = F)
+```
+
+```{r}
+sliderInput("year_start1a", "Ano min",value = 2010, min = 2010, max = 2019, dragRange = F,step = 1)
+```
+
+```{r}
+sliderInput("year_end1a", "Ano max",value = 2019, min = 2010, max = 2019, dragRange = F)
+```
+
+```{r}
+sexo1a = reactive(input$sexo1a)
+age_start1a = reactive(input$age_start1a)
+age_end1a = reactive(input$age_end1a)
+year_start1a = reactive(input$year_start1a) 
+year_end1a = reactive(input$year_end1a)
+```
+
+```{r}
+filter_dataInput1a  <- 
+  reactive({
+    filter_ob(sex =sexo1a(),age_start = age_start1a(),age_end =age_end1a() ,
+              year_start =year_start1a() ,year_end =year_end1a() )
+  }) 
+```
+
+## col {.tabset}
+
+### Pirâmide
+
+```{r}
+renderPlotly({
+  plot <- filter_dataInput1a() %>%
+    drop_na(IDADEanos) %>% 
+    mutate(age_group = cut(IDADEanos, c(seq(0, 80, by = 5), Inf), 
+                           include.lowest = T, right = F)) %>% 
+    group_by(SEXO, age_group) %>% 
+    summarise(n = n()) %>% mutate(n = ifelse(SEXO == "Feminino", - n, n),
+                                  age_group = age_group %>% 
+                                    str_remove_all("\\[|\\)|\\]") %>% 
+                                    str_replace("80,Inf","80+") %>%
+                                    str_replace(",","-") %>% 
+                                    str_replace("5-10","05-10")) %>% 
+    ggplot(aes(n, age_group, fill= SEXO))+
+    geom_bar(stat = "identity")+
+    scale_x_continuous(name="Mortes")+
+    scale_y_discrete(name = 'Grupo de Idade')+
+    scale_fill_manual(values = c("#084594" , "#4493C6"))
+  ggplotly(plot)
+  
+})
+```
+
+### Gráfico de Densidade
+
+```{r}
+renderPlot(
+  {
+    plot <- density_plot(filter_dataInput1a(), sex = T)+
+      scale_fill_manual(values = colorRampPalette(brewer.pal(8, "Blues"))(10))+
+      ylab("CID-10")
+    plot
+  }
+)
+```
+
+### Gráfico de Barras Relativo
+
+```{r}
+renderPlotly(
+  {
+    plot <- bar_plot(data = filter_dataInput1a(), relative = T)+
+      scale_fill_manual(values = c("#084594" , "#4493C6"))+
+      ylab("CID-10")
+    ggplotly(plot)
+  }
+)
+```
+
+### Tabela
+
+```{r}
+DT::renderDataTable({
+  data_male <-filter_dataInput1a() %>% filter(SEXO == "Masculino") %>% 
+    group_by(DESCRICAO) %>% summarise(Masculino = n())
+  data_female <- filter_dataInput1a() %>% filter(SEXO == "Feminino") %>% 
+    group_by(DESCRICAO) %>% summarise(Feminino = n()) 
+  
+  data <- full_join(data_male,data_female, by = c("DESCRICAO"))
+  
+  
+  DT::datatable(data, fillContainer = TRUE,rownames = F)
+})
+```
+
+# Comparação por Período {data-orientation=columns data-navmenu="Mortalidade"}
+
+## Variáveis {.sidebar}
+
+### Variáveis {.no-title}
+
+```{r}
+selectInput("sexo1b", "Sexo", choices = c("Masculino","Feminino","FM"))
+```
+
+```{r}
+sliderInput("age_start1b", "Idade min",value = 0, min = 0, max = 120, dragRange = F)
+```
+
+```{r}
+sliderInput("age_end1b", "Idade max",value = 120, min = 0, max = 120, dragRange = F)
+```
+
+```{r}
+sliderInput("year_start1b", "Ano min",value = 2010, min = 2010, max = 2019, dragRange = F,step = 1)
+```
+
+```{r}
+sliderInput("year_end1b", "Ano max",value = 2019, min = 2010, max = 2019, dragRange = F)
+```
+
+```{r}
+sexo1b = reactive(input$sexo1b)
+age_start1b = reactive(input$age_start1b)
+age_end1b = reactive(input$age_end1b)
+year_start1b = reactive(input$year_start1b) 
+year_end1b = reactive(input$year_end1b)
+```
+
+```{r}
+filter_dataInput1b  <- 
+  reactive({
+    filter_ob(sex =sexo1b(),age_start = age_start1b(),
+              age_end =age_end1b() ,
+              year_start =year_start1b(),year_end =year_end1b())
+  }) 
+```
+
+## Column {data-width=600}
+
+### A {.no-title}
+
+```{r}
+renderPlotly({
+  data <- filter_dataInput1b()
+  # Creating filter
+  filter_freq <- data %>% 
+    filter(DTOBITO == year_start1b()) %>% 
+    count(DESCRICAO) %>% arrange(desc(n)) %>% head(10)
+  filter_freq <- filter_freq$DESCRICAO
+  # applying filter
+  data <- data %>% filter(DTOBITO == year_start1b()) %>% 
+    filter (DESCRICAO %in% filter_freq) %>% 
+    group_by(DESCRICAO) %>% summarise(n = n()) %>% 
+    arrange(desc(n))
+  #plotting 
+  plot <- data %>% 
+    ggplot(aes(reorder(DESCRICAO,n),n)) +
+    geom_bar( stat = "identity", fill = "steelblue")+
+    xlab('')+
+    ylab('')+
+    coord_flip()+
+    scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 25))+
+    ggtitle(paste(year_start1b()))+
+    theme(axis.text = element_text(size=10))
+  ggplotly(plot )
+  
+})
+```
+
+### B {.no-title}
+
+```{r}
+renderPlotly({
+  # Creating filter
+  data <- filter_dataInput1b()
+  filter_freq <- data %>% 
+    filter(DTOBITO == year_end1b()) %>% 
+    count(DESCRICAO) %>% arrange(desc(n)) %>% head(10)
+  filter_freq <- filter_freq$DESCRICAO
+  # applying filter
+  data <- data %>% filter(DTOBITO == year_end1b()) %>%
+    filter (DESCRICAO %in% filter_freq) %>% 
+    group_by(DESCRICAO) %>% summarise(n = n()) %>% 
+    arrange(desc(n))
+  #plotting 
+  plot <-  data %>% ggplot() +
+    geom_bar(aes(reorder(DESCRICAO,n),  n), stat = "identity", fill = "blue")+
+    xlab('')+
+    ylab('')+
+    coord_flip()+
+    scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 25))+
+    ggtitle(paste(year_end1b()))+
+    theme(axis.text = element_text(size=10))
+  ggplotly(plot)
+})
+```
+
+## Column {data-width=400}
+
+### C {.no-title}
+
+```{r}
+DT::renderDataTable({
+  data_ys <- filter_dataInput1b() %>% filter(DTOBITO == year_start1b()) %>% 
+    group_by(DESCRICAO) %>% summarise(ys = n()) 
+  colnames(data_ys) <- c("Causa", year_start1b())
+  data_ye <- filter_dataInput1b() %>% filter(DTOBITO == year_end1b()) %>% 
+    group_by(DESCRICAO) %>% summarise(ye = n())
+  colnames(data_ye) <- c("Causa", year_end1b())
+  
+  data <- left_join(data_ys,data_ye, by = c("Causa"))
+  DT::datatable(data, fillContainer = TRUE,rownames = F)
+})
+```
+
+# Mapas {data-orientation=rows}
+
+## Variáveis {.sidebar}
+
+### Variáveis {.no-title}
+```{r}
+selectInput("year", "Intervalo",choices= c("2010-2014","2015-2019", "2010-2019"))
+selectInput("variable1a", "Variável", choices= variables_list)
+```
+
+```{r}
+year = reactive(input$year) 
+variable1a = reactive(input$variable1a)
+```
+
+
+```{r}
+# Summarizing data for maps and cor
+std_dataInput1 <- reactive({
+  year <- year()
+  year_start2 <- strsplit(year, split = "-")[[1]][1]
+  year_end2 <-  strsplit(year, split = "-")[[1]][2]
+  std_rate(year_start = year_start2, year_end =year_end2)
+}) 
+```
+
+* Essas imagens podem tomar um maior tempo para carregar.
+
+## row {data-height=650}
+
+### Mapas {.no-title}
+
+```{r}
+# # Maps
+leaflet::leafletOutput('mapview1')
+output$mapview1 <-
+  leaflet::renderLeaflet({
+    m <- map_mun_std(std_dataInput1(),variable = variable1a(),
+                     satellite = T, rev = T)
+    m@map
+  })
+```
+
+# Cobertura Citologia de Colo de Útero {data-navmenu="Cobertura Preventivo" data-navmenu-icon="fa-bookmark"}
+
+## Variáveis {.sidebar}
+
+#### Variáveis {.no-title}
+
+```{r}
+sliderInput("year_start3", "Ano min",value = 2008, min = 2008, max = 2017, 
+            dragRange = F)
+```
+
+```{r}
+sliderInput("year_end3", "Ano max",value = 2017, min = 2008, max = 2017, 
+            dragRange = F)
+```
+
+## col  {.tabset}
+
+### Mapa Cobertura Citologia de Colo de Útero
+
+```{r}
+# fazer o mapa também com a cobertura média?
+leaflet::leafletOutput('mapview3')
+
+output$mapview3 <-
+  leaflet::renderLeaflet({
+    min <- input$year_start3
+    max <- input$year_end3
+    data <- prev_cervical %>%
+      filter(Ano %in% c(min:max)) %>%
+      group_by(code_muni) %>%
+      summarise(`Cobertura Media do Intervalo` = round(mean(razcito),2))
+    m <- mapview(data, zcol = 'Cobertura Media do Intervalo', 
+                 col.regions=brewer.pal(9,"RdBu"))
+    m@map
+  })
+```
+
+### Tabela Cobertura Citologia de Colo de Útero
+
+```{r}
+DT::renderDataTable({
+  min <- input$year_start3
+  max <- input$year_end3
+  data <- prev_cervical %>% 
+    filter(Ano %in% c(min:max)) %>% sf::st_drop_geometry() %>% 
+    group_by(code_muni) %>%
+    summarise(`Cobertura Média do Intervalo` = round(mean(razcito),2))
+  DT::datatable(data, fillContainer = TRUE)
+})
+```
+
+# Cobertura de Mamografia {data-navmenu="Cobertura Preventivo" data-navmenu-icon="fa-bookmark"}
+
+## Variáveis {.sidebar}
+
+#### Variáveis {.no-title}
+
+```{r}
+sliderInput("year_start4", "Ano min",value = 2008, min = 2008, max = 2017, 
+            dragRange = F)
+```
+
+```{r}
+sliderInput("year_end4", "Ano max",value = 2017, min = 2008, max = 2017, 
+            dragRange = F)
+```
+
+## col {.tabset}
+
+### Mapa Cobertura de Mamografia
+
+```{r}
+leaflet::leafletOutput('mapview4')
+
+output$mapview4 <-
+  leaflet::renderLeaflet({
+    min <- input$year_start4
+    max <- input$year_end4
+    data <- prev_breast %>%
+      filter(Ano %in% c(min:max)) %>%
+      group_by(name_muni) %>%
+      summarise(`Cobertura Media do Intervalo` = round(mean(razmam),2))
+    m <- mapview(data, zcol = 'Cobertura Media do Intervalo',
+                 col.regions=brewer.pal(9,"RdBu"))
+    m@map
+  })
+```
+
+### Tabela Cobertura de Mamografia
+
+```{r}
+DT::renderDataTable({
+  min <- input$year_start4
+  max <- input$year_end4
+  data <- prev_breast %>% st_drop_geometry() %>%
+    filter(Ano %in% c(min:max)) %>%
+    group_by(name_muni) %>%
+    summarise(`Cobertura Média do Intervalo` = round(mean(razmam),2))
+  DT::datatable(data, fillContainer = TRUE)    })
+```
